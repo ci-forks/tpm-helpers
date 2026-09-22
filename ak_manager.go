@@ -473,14 +473,23 @@ func publicKeyFromTPMTPublic(pub *tpm2.TPMTPublic) (crypto.PublicKey, error) {
 			curve = elliptic.P521()
 		}
 
-		x := new(big.Int).SetBytes(eccUnique.X.Buffer)
-		y := new(big.Int).SetBytes(eccUnique.Y.Buffer)
+		// The TPM reports the coordinates as big-endian integers with leading
+		// zeros stripped, so pad each one back to the field size before
+		// handing the uncompressed point to crypto/ecdsa. Setting X and Y
+		// directly is deprecated as of Go 1.26, and parsing also rejects a
+		// point that is not on the curve, which the old code accepted.
+		byteLen := (curve.Params().BitSize + 7) / 8
+		xb, yb := eccUnique.X.Buffer, eccUnique.Y.Buffer
+		if len(xb) > byteLen || len(yb) > byteLen {
+			return nil, fmt.Errorf("ECC coordinate longer than the %s field size", curve.Params().Name)
+		}
 
-		return &ecdsa.PublicKey{
-			Curve: curve,
-			X:     x,
-			Y:     y,
-		}, nil
+		point := make([]byte, 1+2*byteLen)
+		point[0] = 4
+		copy(point[1+byteLen-len(xb):1+byteLen], xb)
+		copy(point[1+2*byteLen-len(yb):], yb)
+
+		return ecdsa.ParseUncompressedPublicKey(curve, point)
 
 	default:
 		return nil, fmt.Errorf("unsupported key type: %v", pub.Type)
